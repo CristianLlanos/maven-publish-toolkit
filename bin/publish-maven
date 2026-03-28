@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+KEYCHAIN_SERVICE="central-portal"
+DRY_RUN=false
+
+# ---------- Argument parsing ----------
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run)
+      DRY_RUN=true
+      shift
+      ;;
+    --help)
+      echo "Usage: publish-maven [--dry-run]"
+      echo ""
+      echo "Publish a Gradle project to Maven Central."
+      echo "Run this from the root of a Gradle project."
+      echo ""
+      echo "Options:"
+      echo "  --dry-run  Publish to local ~/.m2 repository only (no upload)"
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1"
+      exit 1
+      ;;
+  esac
+done
+
+# ---------- Functions ----------
+
+get_keychain_value() {
+  local account="$1"
+  local value
+  value=$(security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$account" -w 2>/dev/null) || {
+    echo "Error: '$account' not found in Keychain." >&2
+    echo "Run setup-maven-publishing first." >&2
+    exit 1
+  }
+  echo "$value"
+}
+
+validate_project() {
+  local build_file=""
+
+  if [[ -f "build.gradle.kts" ]]; then
+    build_file="build.gradle.kts"
+  elif [[ -f "build.gradle" ]]; then
+    build_file="build.gradle"
+  else
+    echo "Error: No build.gradle.kts or build.gradle found in $(pwd)"
+    exit 1
+  fi
+
+  if ! grep -q "com.vanniktech.maven.publish" "$build_file"; then
+    echo "Error: Maven publish plugin not configured in $build_file"
+    echo ""
+    print_template
+    exit 1
+  fi
+}
+
+print_template() {
+  cat <<'TEMPLATE'
+Add the following to your build.gradle.kts:
+
+  plugins {
+      // ... your other plugins
+      signing
+      id("com.vanniktech.maven.publish") version "0.30.0"
+  }
+
+  signing {
+      useGpgCmd()
+  }
+
+  mavenPublishing {
+      publishToMavenCentral(com.vanniktech.maven.publish.SonatypeHost.CENTRAL_PORTAL)
+      signAllPublications()
+
+      coordinates("com.example", "your-artifact", version.toString())
+
+      pom {
+          name.set("Your Project Name")
+          description.set("A description of your project")
+          url.set("https://github.com/you/your-project")
+
+          licenses {
+              license {
+                  name.set("MIT License")
+                  url.set("https://opensource.org/licenses/MIT")
+              }
+          }
+
+          developers {
+              developer {
+                  id.set("your-id")
+                  name.set("Your Name")
+                  email.set("you@example.com")
+              }
+          }
+
+          scm {
+              connection.set("scm:git:git://github.com/you/your-project.git")
+              developerConnection.set("scm:git:ssh://github.com/you/your-project.git")
+              url.set("https://github.com/you/your-project")
+          }
+      }
+  }
+TEMPLATE
+}
+
+publish() {
+  if [[ "$DRY_RUN" == true ]]; then
+    echo "Dry run: publishing to local Maven repository (~/.m2)..."
+    echo ""
+
+    ./gradlew publishToMavenLocal
+
+    echo ""
+    echo "Dry run complete. Check artifacts in ~/.m2/repository/"
+  else
+    local username password
+    username=$(get_keychain_value "username")
+    password=$(get_keychain_value "password")
+
+    echo "Publishing to Maven Central..."
+    echo ""
+
+    ./gradlew publishToMavenCentral \
+      -PmavenCentralUsername="$username" \
+      -PmavenCentralPassword="$password"
+
+    echo ""
+    echo "Published. Check status at https://central.sonatype.com"
+  fi
+}
+
+# ---------- Main ----------
+
+validate_project
+publish

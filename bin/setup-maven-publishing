@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+KEYS_DIR="${HOME}/.config/keys/gpg"
+KEYCHAIN_SERVICE="central-portal"
+GRADLE_PROPS="${HOME}/.gradle/gradle.properties"
+GPG_AGENT_CONF="${HOME}/.gnupg/gpg-agent.conf"
+
+step=0
+print_step() {
+  step=$((step + 1))
+  echo ""
+  echo "[$step] $1"
+  echo "-------------------------------------------"
+}
+
+skip() {
+  echo "  Already done, skipping."
+}
+
+# ---------- Argument parsing ----------
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --keys-dir)
+      KEYS_DIR="$2"
+      shift 2
+      ;;
+    --help)
+      echo "Usage: setup-maven-publishing [--keys-dir <path>]"
+      echo ""
+      echo "One-time setup for publishing to Maven Central on macOS."
+      echo ""
+      echo "Options:"
+      echo "  --keys-dir <path>  Directory with exported GPG keys (default: ~/.config/keys/gpg)"
+      echo "                     Expected files: private-key.gpg, public-key.gpg"
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1"
+      exit 1
+      ;;
+  esac
+done
+
+# ---------- Step functions ----------
+
+install_deps() {
+  print_step "Installing dependencies"
+
+  if ! command -v brew &>/dev/null; then
+    echo "  Homebrew is required. Install it from https://brew.sh"
+    exit 1
+  fi
+
+  for pkg in gnupg pinentry-mac; do
+    if brew list "$pkg" &>/dev/null; then
+      echo "  $pkg: installed"
+    else
+      echo "  Installing $pkg..."
+      brew install "$pkg"
+    fi
+  done
+}
+
+configure_gpg_agent() {
+  print_step "Configuring GPG agent"
+
+  local pinentry_path
+  pinentry_path="$(brew --prefix)/bin/pinentry-mac"
+
+  if [[ ! -f "$pinentry_path" ]]; then
+    echo "  pinentry-mac not found at $pinentry_path"
+    exit 1
+  fi
+
+  mkdir -p "$(dirname "$GPG_AGENT_CONF")"
+
+  local expected="pinentry-program ${pinentry_path}"
+
+  if [[ -f "$GPG_AGENT_CONF" ]] && grep -qF "$expected" "$GPG_AGENT_CONF"; then
+    skip
+    return
+  fi
+
+  # Remove any existing pinentry-program line and add the correct one
+  if [[ -f "$GPG_AGENT_CONF" ]]; then
+    grep -v "^pinentry-program" "$GPG_AGENT_CONF" > "${GPG_AGENT_CONF}.tmp" || true
+    mv "${GPG_AGENT_CONF}.tmp" "$GPG_AGENT_CONF"
+  fi
+
+  echo "$expected" >> "$GPG_AGENT_CONF"
+  echo "  Wrote: $GPG_AGENT_CONF"
+
+  gpgconf --kill gpg-agent
+  echo "  GPG agent restarted"
+}
+
+handle_gpg_keys() {
+  print_step "Setting up GPG keys"
+
+  if gpg --list-secret-keys --keyid-format SHORT 2>/dev/null | grep -q "sec"; then
+    local key_id
+    key_id=$(gpg --list-secret-keys --keyid-format SHORT 2>/dev/null | grep "^sec" | head -1 | sed 's/.*\///' | awk '{print $1}')
+    echo "  GPG key already configured: $key_id"
+    return
+  fi
+
+  if [[ -f "${KEYS_DIR}/private-key.gpg" ]]; then
+    echo "  Importing keys from ${KEYS_DIR}..."
+
+    if [[ -f "${KEYS_DIR}/public-key.gpg" ]]; then
+      gpg --import "${KEYS_DIR}/public-key.gpg"
+    fi
+    gpg --import "${KEYS_DIR}/private-key.gpg"
+
+    echo "  Keys imported."
+  else
+    echo "  No GPG keys found at ${KEYS_DIR}"
+    read -rp "  Generate a new GPG key? [Y/n] " answer
+    if [[ "${answer:-Y}" =~ ^[Yy]$ ]]; then
+      read -rp "  Full name: " gpg_name
+      read -rp "  Email: " gpg_email
+
+      gpg --batch --full-generate-key <<EOF
+Key-Type: RSA
+Key-Length: 4096
+Subkey-Type: RSA
+Subkey-Length: 4096
+Name-Real: ${gpg_name}
+Name-Email: ${gpg_email}
+Expire-Date: 0
+%ask-passphrase
+%commit
+EOF
+      echo "  Key generated."
+    else
+      echo "  Skipping key generation. You'll need a GPG key to publish."
+      exit 1
+    fi
+  fi
+}
+
+get_key_id() {
+  gpg --list-secret-keys --keyid-format SHORT 2>/dev/null | grep "^sec" | head -1 | sed 's/.*\///' | awk '{print $1}'
+}
+
+get_fingerprint() {
+  gpg --list-keys --keyid-format LONG 2>/dev/null | grep "^pub" | head -1 | sed 's/.*\///' | awk '{print $1}'
+}
+
+publish_public_key() {
+  print_step "Publishing public key to keyserver"
+
+  local fingerprint
+  fingerprint=$(get_fingerprint)
+
+  echo "  Sending key ${fingerprint} to keyserver.ubuntu.com..."
+  gpg --keyserver keyserver.ubuntu.com --send-keys "$fingerprint"
+  echo "  Done."
+}
+
+test_signing() {
+  print_step "Testing GPG signing"
+
+  echo "  If prompted, enter your GPG passphrase and check 'Save in Keychain'."
+  echo ""
+
+  if echo "test" | gpg --clearsign > /dev/null 2>&1; then
+    echo "  Signing works."
+  else
+    echo "  Signing failed. Check your GPG setup."
+    exit 1
+  fi
+}
+
+store_credentials() {
+  print_step "Storing Central Portal credentials in Keychain"
+
+  for account in username password; do
+    if security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$account" &>/dev/null; then
+      echo "  $account: already stored"
+    else
+      local prompt="  Central Portal ${account}: "
+      local value
+
+      if [[ "$account" == "password" ]]; then
+        read -rs -p "$prompt" value
+        echo ""
+      else
+        read -r -p "$prompt" value
+      fi
+
+      security add-generic-password -s "$KEYCHAIN_SERVICE" -a "$account" -w "$value"
+      echo "  $account: stored in Keychain"
+    fi
+  done
+}
+
+configure_gradle() {
+  print_step "Configuring Gradle"
+
+  local key_id
+  key_id=$(get_key_id)
+
+  mkdir -p "$(dirname "$GRADLE_PROPS")"
+
+  local entry="signing.gnupg.keyName=${key_id}"
+
+  if [[ -f "$GRADLE_PROPS" ]] && grep -qF "signing.gnupg.keyName=" "$GRADLE_PROPS"; then
+    # Update existing entry
+    sed -i '' "s/^signing.gnupg.keyName=.*/${entry}/" "$GRADLE_PROPS"
+    echo "  Updated: $GRADLE_PROPS"
+  else
+    echo "$entry" >> "$GRADLE_PROPS"
+    echo "  Wrote: $GRADLE_PROPS"
+  fi
+}
+
+print_summary() {
+  local key_id
+  key_id=$(get_key_id)
+
+  echo ""
+  echo "==========================================="
+  echo "  Setup complete"
+  echo "==========================================="
+  echo ""
+  echo "  GPG key:      ${key_id}"
+  echo "  Keychain:     ${KEYCHAIN_SERVICE} (username, password)"
+  echo "  Gradle:       ${GRADLE_PROPS}"
+  echo "  GPG agent:    ${GPG_AGENT_CONF}"
+  echo ""
+  echo "  To publish a project:"
+  echo "    cd your-project"
+  echo "    publish-maven"
+  echo ""
+  echo "  To test locally first:"
+  echo "    publish-maven --dry-run"
+  echo ""
+}
+
+# ---------- Main ----------
+
+echo "Maven Central Publishing Setup"
+echo "==========================================="
+
+install_deps
+configure_gpg_agent
+handle_gpg_keys
+publish_public_key
+test_signing
+store_credentials
+configure_gradle
+print_summary
