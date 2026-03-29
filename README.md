@@ -128,6 +128,8 @@ publish-maven
 publish-maven --release
 ```
 
+> **Tip:** `--dry-run` publishes to `~/.m2`, which dependant projects can resolve immediately by adding `mavenLocal()` to their `repositories` block. This lets you develop against the new version without waiting for Maven Central.
+
 ## How it works
 
 The toolkit uses two security mechanisms to avoid storing secrets in files:
