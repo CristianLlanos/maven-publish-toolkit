@@ -22,9 +22,12 @@ Publishing to Maven Central requires a surprising amount of setup: GPG keys, key
 **`publish-maven`** runs from any Gradle project:
 
 ```bash
-publish-maven            # publish to Maven Central
-publish-maven --dry-run  # publish to ~/.m2 only (test everything without uploading)
+publish-maven --dry-run    # publish to ~/.m2 only (test everything without uploading)
+publish-maven              # publish to Maven Central (manual release via sonatype)
+publish-maven --release    # publish and release automatically
 ```
+
+**`setup-maven-claude-md`** generates a `CLAUDE.md` with publishing instructions for your project.
 
 No passwords in `gradle.properties`. No tokens in environment variables. No secrets in shell history.
 
@@ -118,8 +121,11 @@ cd your-project
 # Verify everything works locally first
 publish-maven --dry-run
 
-# Ship it
+# Ship it (manual release via sonatype)
 publish-maven
+
+# Or publish and release automatically
+publish-maven --release
 ```
 
 ## How it works
