@@ -6,6 +6,7 @@ install:
 	@mkdir -p $(PREFIX)
 	@install -m 755 bin/setup-maven-publishing $(PREFIX)/setup-maven-publishing
 	@install -m 755 bin/publish-maven $(PREFIX)/publish-maven
+	@install -m 755 bin/setup-maven-claude-md $(PREFIX)/setup-maven-claude-md
 	@echo "Installed to $(PREFIX)/"
 	@echo ""
 	@case "$$PATH" in \
@@ -26,4 +27,5 @@ setup: install
 uninstall:
 	@rm -f $(PREFIX)/setup-maven-publishing
 	@rm -f $(PREFIX)/publish-maven
+	@rm -f $(PREFIX)/setup-maven-claude-md
 	@echo "Uninstalled from $(PREFIX)/"

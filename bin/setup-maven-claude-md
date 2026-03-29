@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ---------- Argument parsing ----------
+
+if [[ "${1:-}" == "--help" ]]; then
+  echo "Usage: init-claude-md"
+  echo ""
+  echo "Generate a CLAUDE.md with publishing instructions for a Gradle project."
+  echo "Run this from the root of a Gradle project configured with the"
+  echo "Vanniktech Maven Publish plugin."
+  exit 0
+fi
+
+# ---------- Find build file ----------
+
+build_file=""
+if [[ -f "build.gradle.kts" ]]; then
+  build_file="build.gradle.kts"
+elif [[ -f "build.gradle" ]]; then
+  build_file="build.gradle"
+else
+  echo "Error: No build.gradle.kts or build.gradle found in $(pwd)"
+  exit 1
+fi
+
+if ! grep -q "com.vanniktech.maven.publish" "$build_file"; then
+  echo "Error: Maven publish plugin not configured in $build_file"
+  exit 1
+fi
+
+# ---------- Extract project info ----------
+
+# Extract coordinates: coordinates("group", "artifact", ...)
+coords_line=$(grep 'coordinates(' "$build_file")
+group=$(echo "$coords_line" | sed 's/.*coordinates(\s*"//;s/".*//')
+artifact=$(echo "$coords_line" | sed 's/.*coordinates([^,]*, *"//;s/".*//')
+
+# Extract project name from pom name.set("...")
+project_name=$(grep -oE 'name\.set\(\s*"[^"]+"' "$build_file" | head -1 | sed 's/name\.set(\s*"//;s/"//')
+
+if [[ -z "$group" || -z "$artifact" ]]; then
+  echo "Error: Could not extract coordinates from $build_file"
+  exit 1
+fi
+
+if [[ -z "$project_name" ]]; then
+  project_name="$artifact"
+fi
+
+# ---------- Check for existing CLAUDE.md ----------
+
+if [[ -f "CLAUDE.md" ]]; then
+  echo "CLAUDE.md already exists in $(pwd)"
+  read -rp "Overwrite? [y/N] " answer
+  if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+    echo "Aborted."
+    exit 0
+  fi
+fi
+
+# ---------- Write CLAUDE.md ----------
+
+cat > CLAUDE.md <<EOF
+# ${project_name}
+
+## Publishing to Maven Central
+
+\`\`\`bash
+publish-maven --dry-run    # test locally (~/.m2)
+publish-maven              # publish to Maven Central
+\`\`\`
+
+Coordinates: \`${group}:${artifact}:<version>\`
+
+Version is set in \`${build_file}\`. Bump it before publishing a new release.
+
+After publishing, check status at https://central.sonatype.com
+EOF
+
+echo "Created CLAUDE.md for ${group}:${artifact}"

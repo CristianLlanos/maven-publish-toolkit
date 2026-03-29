@@ -3,6 +3,7 @@ set -euo pipefail
 
 KEYCHAIN_SERVICE="central-portal"
 DRY_RUN=false
+RELEASE=false
 
 # ---------- Argument parsing ----------
 
@@ -12,14 +13,19 @@ while [[ $# -gt 0 ]]; do
       DRY_RUN=true
       shift
       ;;
+    --release)
+      RELEASE=true
+      shift
+      ;;
     --help)
-      echo "Usage: publish-maven [--dry-run]"
+      echo "Usage: publish-maven [--dry-run] [--release]"
       echo ""
       echo "Publish a Gradle project to Maven Central."
       echo "Run this from the root of a Gradle project."
       echo ""
       echo "Options:"
-      echo "  --dry-run  Publish to local ~/.m2 repository only (no upload)"
+      echo "  --dry-run   Publish to local ~/.m2 repository only (no upload)"
+      echo "  --release   Upload and release automatically (no manual step)"
       exit 0
       ;;
     *)
@@ -77,7 +83,7 @@ Add the following to your build.gradle.kts:
   }
 
   mavenPublishing {
-      publishToMavenCentral(com.vanniktech.maven.publish.SonatypeHost.CENTRAL_PORTAL)
+      publishAndReleaseToMavenCentral(com.vanniktech.maven.publish.SonatypeHost.CENTRAL_PORTAL)
       signAllPublications()
 
       coordinates("com.example", "your-artifact", version.toString())
@@ -126,15 +132,25 @@ publish() {
     username=$(get_keychain_value "username")
     password=$(get_keychain_value "password")
 
-    echo "Publishing to Maven Central..."
+    local task="publishToMavenCentral"
+    if [[ "$RELEASE" == true ]]; then
+      task="publishAndReleaseToMavenCentral"
+      echo "Publishing and releasing to Maven Central..."
+    else
+      echo "Publishing to Maven Central..."
+    fi
     echo ""
 
-    ./gradlew publishToMavenCentral \
+    ./gradlew "$task" \
       -PmavenCentralUsername="$username" \
       -PmavenCentralPassword="$password"
 
     echo ""
-    echo "Published. Check status at https://central.sonatype.com"
+    if [[ "$RELEASE" == true ]]; then
+      echo "Released. Check at https://central.sonatype.com"
+    else
+      echo "Published. Go to https://central.sonatype.com to review and release."
+    fi
   fi
 }
 
@@ -142,3 +158,12 @@ publish() {
 
 validate_project
 publish
+
+# Offer to create CLAUDE.md if it doesn't exist
+if [[ ! -f "CLAUDE.md" ]] && command -v setup-maven-claude-md &>/dev/null; then
+  echo ""
+  read -rp "No CLAUDE.md found. Create one with publishing instructions? [Y/n] " answer
+  if [[ ! "$answer" =~ ^[Nn]$ ]]; then
+    setup-maven-claude-md
+  fi
+fi
